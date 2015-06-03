@@ -1,0 +1,172 @@
+install.packages("http://cran.r-project.org/src/contrib/Archive/FRBData/FRBData_0.3.tar.gz", repos = NULL, type="source")
+
+library("FRBData")
+
+
+#As an example, we download treasury and swap curve from 2005 to 2011.
+
+start <- as.Date("2005-12-31")
+end   <- as.Date("2011-03-31")
+
+curve.treasury <- GetInterestRates("TCMNOM", from = start, to = end)
+curve.swap     <- GetInterestRates("SWAPS",  from = start, to = end)
+
+#these data are an xts object.
+class(curve.swap)
+head(curve.swap)
+#plot 10Y swap spread
+plot(curve.swap[, "10Y"] - curve.treasury[, "10Y"], main = "swap spread")
+
+
+#plot time-varying treasury term structure
+
+#plot yield curve by each year
+curve.treasury.each.year <- t(curve.treasury[endpoints(curve.swap, on = "years")])
+par(xaxt="n")
+matplot(curve.treasury.each.year, main = "time-varying treasury yield curve",
+        type = "l", lwd = 2,lty = 1, xlab = "Term", ylab = "Yield")
+legend(8.5, 2.0, legend = substr(colnames(curve.treasury.each.year), 1, 4),
+       col=1:ncol(curve.treasury.each.year), lty = 1, lwd = 2)
+par(xaxt = "s")
+axis(1,1:length(rownames(curve.treasury.each.year)),rownames(curve.treasury.each.year))
+
+
+
+# READING THE DATA
+
+
+Pt <-curve.swap[, "10Y"] - curve.treasury[, "10Y"]
+
+#--------------------------------------------------------------------------
+# BAYESIAN LOG-PERIODIC MODEL 
+# Code 1. Estimating parameters in the log-periodic model.
+#--------------------------------------------------------------------------
+# THE LOG-PERIODIC MODEL IS DEFINED AS
+# P(t)= x(1)+x(2).*(x(3)-t).^(x(4))
+#                    +x(5).*(x(3)-t).^(x(4)).*cos(x(6).*log(x(3)-t)+x(7))
+#--------------------------------------------------------------------------
+# Inputs:
+# A good guess for each parameter.
+# The variance in the disturbance.
+#Financial time series before crash.
+# 
+# Outputs:
+#  Estimated parameters.
+# Confidence interval on the estimated parameters.
+# Optimized function value.      
+#--------------------------------------------------------------------------
+# Note: 
+# The following code estimates the log-periodic model for financial
+# crashes following the notation used by Gazola, et al (2008) 
+#--------------------------------------------------------------------------
+
+# Required packages
+# install.packages("optimx")
+library(optimx)
+library(nlme)
+
+library(tmvtnorm) # drawing from trunced multivariate normal distribution
+#--------------------------------------------------------------------------
+
+log_periodic_sim<-function(n, g1, g2, g3, g4, g5, g6, g7, sigma2)
+{
+# TRANSFORMATION OF TIME 
+#-------------------------------------------------------------------------
+# TIME INDEX t_c IS EXPRESSED IN UNITS OF ONE YEAR
+#-------------------------------------------------------------------------
+  t = rep(0,n)
+
+  for (i in 1:n)
+  {
+    t[i]=i/252
+  }
+
+#-------------------------------------------------------------------------
+# THE FOLLOWING LINE GENERATES A HYPOTHETICAL (STOCHASTIC) TIME SERIES
+#-------------------------------------------------------------------------
+  Pt=g1+g2*((g3-t)^(g4))+g5*((g3-t)^(g4))*cos(g6*log(g3-t)+g7)+ rnorm(n,0,sigma2^0.5)
+
+}
+
+
+
+log_periodic_loglikelihood <- function(theta)
+{
+# Requires existance of data vector Pt !!!
+  
+  g1 = theta[1];
+  g2= theta[2];
+  g3= theta[3];
+  g4= theta[4]; 
+  g5= theta[5]; 
+  g6= theta[6]; 
+  g7= theta[7]; 
+  sigma2 = theta[8];
+
+
+# TRANSFORMATION OF TIME 
+#-------------------------------------------------------------------------
+# TIME INDEX t_c IS EXPRESSED IN UNITS OF ONE YEAR
+#-------------------------------------------------------------------------
+  n = length(Pt);
+
+  t = rep(0,n)
+
+  for (i in 1:n)
+  {
+    t[i]=i/252;
+  }
+
+
+#-------------------------------------------------------------------------
+# LIKELIHOOD FUNCTION
+#-------------------------------------------------------------------------
+  
+  P = g1+g2*((g3-t)^(g4))+g5*((g3-t)^(g4))*cos(g6*log(g3-t)+g7);
+
+  # L = (2* pi*sigma2)^(-n/2)*exp(sum(-0.5*(y-P).^2./sigma2));
+
+  # L = mvnpdf(Pt,P,diag((sigma2*ones(n,1))));
+  logL = 0;
+
+ for (i in 1:n)
+  {
+    logL = logL + log(dnorm(Pt[i],P[i],sigma2^0.5))   
+  }  
+
+
+  -logL # for the purpose of the function fmincon, it looks for minimum not maximum
+
+}
+
+# ESTIMATION
+#--------------------------------------------------------------------------
+# Constrains on parameters
+lb = c(0, -Inf, -Inf, 0, -Inf, 5,0,0);
+ub = c(Inf,0,Inf,1,Inf, 15,2*pi, Inf);
+#--------------------------------------------------------------------------
+
+
+# Starting values
+theta0 = c(5619.2, -3247.5, 3.2, 0.27, 151.58, 5.65, 1.56,1)
+
+
+# Minimalization of -logL
+res = optimx(theta0,log_periodic_loglikelihood, method="Nelder-Mead", hessian=TRUE)
+
+par = as.vector(res$par)
+
+# hessian(log_periodic_loglikelihood, par, method="Richardson")
+
+res2 = fdHess(par, log_periodic_loglikelihood)
+
+hess = res2$Hessian
+
+errors = sqrt(diag(solve(hess)))
+
+#---------------------------------------------------------------------------
+
+#theta =  c(0.1, 0.4, 1, 0.1, 0.4,4)
+#loglikelihood(theta)
+
+
